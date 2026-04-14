@@ -1,0 +1,60 @@
+[
+  {
+    "id": "trading_positive",
+    "trigger": {
+      "adapter_hint":   "blacksmith",
+      "context_hash":   "a3f9b2c1",
+      "prompt_preview": "Player: I want to buy an iron sword."
+    },
+    "memories": [
+      {
+        "text":     "Player bought a sword last session.",
+        "salience": 0.9,
+        "affect":   0.8,
+        "source":   "blacksmith",
+        "age":      2,
+        "tags":     []
+      }
+    ],
+    "expected_adapter": "blacksmith_warm"
+  },
+  {
+    "id": "combat_negative",
+    "trigger": {
+      "adapter_hint":   "guard",
+      "context_hash":   "f1e4d2a8",
+      "prompt_preview": "Player attacked the market stall."
+    },
+    "memories": [
+      {
+        "text":     "Player attacked the market stall yesterday.",
+        "salience": 0.95,
+        "affect":  -0.85,
+        "source":   "guard",
+        "age":      1,
+        "tags":     ["combat"]
+      }
+    ],
+    "expected_adapter": "guard_hostile"
+  },
+  {
+    "id": "decay_eviction",
+    "trigger": {
+      "adapter_hint":   "merchant",
+      "context_hash":   "b8c3a1d5",
+      "prompt_preview": "Player: Do you have any potions?"
+    },
+    "memories": [
+      {
+        "text":     "Player haggled poorly three weeks ago.",
+        "salience": 0.3,
+        "affect":  -0.3,
+        "source":   "merchant",
+        "age":      40,
+        "tags":     []
+      }
+    ],
+    "expected_adapter": "merchant_neutral",
+    "expected_evicted": 1
+  }
+]

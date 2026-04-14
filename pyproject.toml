@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mrag"
+version = "0.1.0"
+description = "Memory Broker Toolkit — sits between PIDX (identity) and mRNA (execution)"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.29",
+]
+
+[project.optional-dependencies]
+# xxhash is the production hash backend; without it the hasher falls back to sha256.
+# Install with: pip install mrag[speed]
+speed = ["xxhash>=3.0"]
+
+# Test dependencies. Install with: pip install mrag[dev]
+dev  = ["pytest>=8.0", "xxhash>=3.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["mrag"]
