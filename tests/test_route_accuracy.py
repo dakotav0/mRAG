@@ -6,6 +6,8 @@ No external model dependencies, no GPU required.
 """
 
 import json
+from typing import Any
+
 import pytest
 
 from mrag.bridge.interface import BridgeInterface
@@ -13,13 +15,17 @@ from mrag.schema.bridge import ContextTrigger
 from mrag.schema.payload import EngRamPayload
 
 
-def _trigger_from(packet: dict) -> ContextTrigger:
+def _trigger_from(packet: dict[str, Any]) -> ContextTrigger:
     return ContextTrigger(**packet["trigger"])
 
 
 class TestRouteAccuracy:
 
-    def test_all_fixtures_match_expected_adapter(self, populated_bridge, mock_packets):
+    def test_all_fixtures_match_expected_adapter(
+        self,
+        populated_bridge: BridgeInterface,
+        mock_packets: list[dict[str, Any]],
+    ) -> None:
         """100% adapter label accuracy across all fixtures."""
         for packet in mock_packets:
             trigger = _trigger_from(packet)
@@ -29,7 +35,11 @@ class TestRouteAccuracy:
                 f"got {response.adapter_label!r}"
             )
 
-    def test_trading_positive(self, populated_bridge, mock_packets):
+    def test_trading_positive(
+        self,
+        populated_bridge: BridgeInterface,
+        mock_packets: list[dict[str, Any]],
+    ) -> None:
         """High positive affect + high salience → warm adapter family."""
         packet = next(p for p in mock_packets if p["id"] == "trading_positive")
         response = populated_bridge.handle_trigger(_trigger_from(packet))
@@ -39,7 +49,11 @@ class TestRouteAccuracy:
         assert response.affect_mean > 0.0
         assert response.evicted_count == 0
 
-    def test_combat_negative(self, populated_bridge, mock_packets):
+    def test_combat_negative(
+        self,
+        populated_bridge: BridgeInterface,
+        mock_packets: list[dict[str, Any]],
+    ) -> None:
         """High negative affect + high salience → hostile adapter family."""
         packet = next(p for p in mock_packets if p["id"] == "combat_negative")
         response = populated_bridge.handle_trigger(_trigger_from(packet))
@@ -49,7 +63,11 @@ class TestRouteAccuracy:
         assert response.affect_mean < -0.6
         assert response.evicted_count == 0
 
-    def test_decay_eviction_returns_neutral(self, populated_bridge, mock_packets):
+    def test_decay_eviction_returns_neutral(
+        self,
+        populated_bridge: BridgeInterface,
+        mock_packets: list[dict[str, Any]],
+    ) -> None:
         """Sub-threshold memory is evicted; empty table → neutral fallback."""
         packet = next(p for p in mock_packets if p["id"] == "decay_eviction")
         response = populated_bridge.handle_trigger(_trigger_from(packet))
@@ -60,7 +78,11 @@ class TestRouteAccuracy:
         assert response.memory_tokens == []
         assert response.salience_max == 0.0
 
-    def test_json_wire_format_round_trip(self, populated_bridge, mock_packets):
+    def test_json_wire_format_round_trip(
+        self,
+        populated_bridge: BridgeInterface,
+        mock_packets: list[dict[str, Any]],
+    ) -> None:
         """JSON in → JSON out preserves all fields."""
         for packet in mock_packets:
             trigger_json = json.dumps(packet["trigger"])
@@ -75,7 +97,7 @@ class TestRouteAccuracy:
             assert 0.0 <= resp["salience_max"] <= 1.0
             assert -1.0 <= resp["affect_mean"] <= 1.0
 
-    def test_cache_miss_returns_neutral(self, bridge):
+    def test_cache_miss_returns_neutral(self, bridge: BridgeInterface) -> None:
         """A trigger with no matching memory in an empty table → neutral."""
         trigger = ContextTrigger(
             adapter_hint="unknown_npc",
@@ -87,9 +109,9 @@ class TestRouteAccuracy:
         assert response.salience_max == 0.0
         assert response.memory_tokens == []
 
-    def test_prefetch_hook_called(self, mock_packets):
+    def test_prefetch_hook_called(self, mock_packets: list[dict[str, Any]]) -> None:
         """Prefetch hint callback fires once per handle_trigger call."""
-        called_with = []
+        called_with: list[str] = []
         b = BridgeInterface(":memory:", prefetch_hint=called_with.append)
 
         packet = next(p for p in mock_packets if p["id"] == "trading_positive")

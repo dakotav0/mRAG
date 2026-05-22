@@ -6,6 +6,7 @@ no GPU required. The mock_packets.json file is the only external dependency.
 """
 
 import json
+from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,7 @@ def mock_packets() -> list[dict[str, Any]]:
 
 
 @pytest.fixture()
-def bridge() -> BridgeInterface:
+def bridge() -> Generator[BridgeInterface, None, None]:
     """
     Fresh BridgeInterface backed by an in-memory SQLite store.
     Each test gets its own isolated instance.
@@ -35,7 +36,7 @@ def bridge() -> BridgeInterface:
 
 
 @pytest.fixture()
-def populated_bridge(mock_packets) -> BridgeInterface:
+def populated_bridge(mock_packets: list[dict[str, Any]]) -> Generator[BridgeInterface, None, None]:
     """
     BridgeInterface pre-loaded with all mock_packets memories.
 

@@ -24,8 +24,8 @@ captures the dominant semantic concept in both short and long contexts.
 """
 
 import hashlib
+import random
 import struct
-from collections import Counter
 
 # ── Config constant ─────────────────────────────────────────────────────────
 # This determines table column structure. DO NOT make this a runtime parameter.
@@ -34,14 +34,15 @@ NGRAM_N: int = 3
 # ── Hash backend ─────────────────────────────────────────────────────────────
 try:
     import xxhash as _xxhash
-    _HAS_XXHASH = True
+    _HAS_XXHASH: bool = True
 except ImportError:
+    _xxhash = None  # type: ignore[assignment]
     _HAS_XXHASH = False
 
 
 def _hash_bytes(data: bytes, seed: int) -> str:
     """Return a hex digest for the given byte string."""
-    if _HAS_XXHASH:
+    if _HAS_XXHASH and _xxhash is not None:
         return _xxhash.xxh64(data, seed=seed).hexdigest()
     # Fallback: truncate SHA-256 to 16 hex chars (64-bit equivalent length)
     return hashlib.sha256(data).hexdigest()[:16]
@@ -164,7 +165,7 @@ if __name__ == "__main__":
     assert h.lookup_key(ids_a) == h.lookup_key(ids_a), "lookup_key must be deterministic"
 
     # Discrimination: distinct short sequences → distinct keys
-    ids_buy   = [1000, 2000, 3000, 4000, 5000]
+    ids_buy    = [1000, 2000, 3000, 4000, 5000]
     ids_attack = [9000, 8000, 7000, 6000, 5000]
     assert h.lookup_key(ids_buy) != h.lookup_key(ids_attack), \
         "distinct token sequences should produce distinct keys"
@@ -178,8 +179,7 @@ if __name__ == "__main__":
     hashes = h.hash_context(ids_long)
     assert len(hashes) == 20 - 3 + 1 == 18, f"expected 18 hashes, got {len(hashes)}"
 
-    # Collision check on 100 synthetic NPC-style sequences
-    import random
+    # Collision check on 100 synthetic sequences
     random.seed(0)
     vocab_size = 32_000  # typical BPE vocab
     sequences = [

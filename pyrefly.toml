@@ -1,0 +1,4 @@
+[python]
+# Point Pyrefly at the uv-managed venv so it can resolve all installed packages,
+# including dev extras (pytest, xxhash) that aren't in the base dependencies.
+python_interpreter = ".venv/bin/python"
