@@ -1,7 +1,7 @@
 """
 Shared pytest fixtures for mRAG tests.
 
-All fixtures use BridgeInterface(":memory:") — no Minecraft, no llama.cpp,
+All fixtures use BridgeInterface(":memory:") — no external model dependencies,
 no GPU required. The mock_packets.json file is the only external dependency.
 """
 

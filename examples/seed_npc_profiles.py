@@ -1,23 +1,26 @@
 """
-generate_npc_origins.py — Seed PIDX profiles for all eight MIIN origin characters.
+examples/seed_npc_profiles.py — Seed PIDX profiles for a set of NPC characters.
+
+Demonstrates how to generate PIDX bridge packets for multiple entities in bulk,
+using the v0.1 bridge format with user origination (decay-exempt).
 
 Run from project root:
-    python tools/generate_npc_origins.py --output-dir data/pidx/mailbox/
+    python examples/seed_npc_profiles.py --output-dir data/pidx/mailbox/
 
-Each NPC gets one .bridge.json file with:
-  - Stat block (class-biased, hand-tuned for character intent)
+Each character gets one .bridge.json file containing:
+  - A behavior register seed (class-biased, hand-tuned per archetype)
   - Alignment (moral × order)
-  - D&D class (primary)
-  - Identity (archetype, core traits, stance)
-  - origination: "user" throughout — these are foundational, decay-exempt
+  - Primary class and level
+  - Identity: archetype, core traits, epistemic stance
+  - origination: "user" throughout — foundational, decay-exempt
 
-After generating, ingest with:
-    pidx watch <mailbox_dir> <npc_id>   (one per NPC)
-  or:
+After generating, ingest with PIDX:
+    pidx watch <mailbox_dir> <entity_id>   (one per entity)
+  or batch:
     for f in data/pidx/mailbox/*.bridge.json; do
-        npc_id=$(basename "$f" | sed 's/npc_//' | sed 's/_origin.bridge.json//')
-        pidx ingest "$npc_id" "$f"
-        pidx confirm-all "$npc_id"
+        entity_id=$(basename "$f" | sed 's/npc_//' | sed 's/_origin.bridge.json//')
+        pidx ingest "$entity_id" "$f"
+        pidx confirm-all "$entity_id"
     done
 """
 
@@ -45,7 +48,10 @@ def make_packet(npc_id: str, observations: list[dict]) -> dict:
     }
 
 
-# ── Origin definitions ────────────────────────────────────────────────────────
+# ── Character definitions ─────────────────────────────────────────────────────
+# Eight archetypes covering the main role slots (warrior, mystic, merchant,
+# naturalist, artisan). Each is a standalone example — names are generic
+# enough to be adapted to any setting.
 
 NPC_ORIGINS = {
 
@@ -70,12 +76,11 @@ NPC_ORIGINS = {
         {"field": "identity.core", "value": "scars are just history written on skin"},
         {"field": "identity.stance", "value": "patrol — always moving, always assessing threat"},
         # Behavior register seeds (observed evidence slots, not stat-derived)
-        # These are early observations to anchor the register before gameplay drift
         {"field": "behavior.aggression",      "value": 0.78, "raw": "origin: fighter class + STR 16"},
         {"field": "behavior.loyalty",         "value": 0.80, "raw": "origin: protector archetype"},
         {"field": "behavior.sociability",     "value": 0.32, "raw": "origin: fighter, neutral alignment"},
         {"field": "behavior.caution",         "value": 0.38, "raw": "origin: low WIS, neutral order"},
-        {"field": "identity.sub_archetype",   "value": None},  # blank — emerge through gameplay
+        {"field": "identity.sub_archetype",   "value": None},  # blank — emerge through play
     ]),
 
     "vex": make_packet("vex", [

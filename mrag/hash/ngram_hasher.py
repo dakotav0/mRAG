@@ -9,7 +9,7 @@ Fallback: first 16 hex chars of SHA-256 if xxhash is not installed.
 No security requirement — collision resistance comes from N=3 window diversity.
 
 Why N=3 (token-level trigrams):
-- Minecraft (20-token prompts after adapter shrink): 18 trigrams — enough to
+- Short turn-based prompt (20 tokens): 18 trigrams — enough to
   discriminate "buy iron sword" from "attack market stall" without the high
   collision rate of bigrams ("do you", "I want").
 - Turn-based (100-token prompts): 98 trigrams — the dominant-frequency trigram

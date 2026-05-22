@@ -34,7 +34,7 @@ class EngRamManager:
         Directory for SQLite .db files, or ":memory:" for tests.
     max_loaded : int
         Maximum number of adapter tables held in RAM simultaneously.
-        Default 3 matches the MIIN archetype count (Warrior, Mystic, etc.).
+        Default 3 is suitable for pipelines with ~3 active context domains held in RAM simultaneously.
     decay_policy : DecayPolicy, optional
         A custom DecayPolicy to pass down to newly mounted tables.
     """

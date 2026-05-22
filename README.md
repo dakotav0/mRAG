@@ -18,7 +18,7 @@ mRAG takes a different bet: **associative memory with configurable decay**. Inst
 It was built for real-time agent pipelines where every millisecond counts. It doesn't replace vector search — it sits upstream of it, keeping working memory fast and letting long-term retrieval happen out of band.
 
 **Use cases:**
-* **Agent identity and continuity** (paired with [PIDX](https://github.com/<org>/pidx))
+* **Agent identity and continuity** (paired with [PIDX](https://github.com/dakotav0/pidx))
 * **Real-time NPC state** in game engines
 * **Session context** that decays dynamically between conversations
 * **Anywhere you need "what's relevant right now"** faster than an embedding lookup
@@ -29,13 +29,13 @@ It was built for real-time agent pipelines where every millisecond counts. It do
 
 ```bash
 # Recommended: uv
-uv add git+https://github.com/<org>/mrag.git
+uv add git+https://github.com/dakotav0/mrag.git
 
 # pip
-pip install git+https://github.com/<org>/mrag.git
+pip install git+https://github.com/dakotav0/mrag.git
 
 # From source
-git clone https://github.com/<org>/mrag.git
+git clone https://github.com/dakotav0/mrag.git
 cd mrag
 uv sync
 ```
@@ -84,15 +84,16 @@ uv sync
 
 ## 🔗 Bundled with PIDX
 
-mRAG ships as a standalone library and as the memory backend for [PIDX](https://github.com/<org>/pidx), the Personality Index for LLM agents. Together they provide:
+mRAG ships as a standalone library and as the memory backend for [PIDX](https://github.com/dakotav0/pidx), the Personality Index for LLM agents. Together they provide:
 
 | Layer | Tool | Role |
 |---|---|---|
-| **Identity** | [PIDX](https://github.com/<org>/pidx) | Structured observations, confidence tracking, profile diffing |
-| **Memory** | [mRAG](https://github.com/<org>/mrag) | Associative retrieval, decay, affect routing |
+| **Identity** | [PIDX](https://github.com/dakotav0/pidx) | Structured observations, confidence tracking, profile diffing |
+| **Memory** | [mRAG](https://github.com/dakotav0/mrag) | Associative retrieval, decay, affect routing |
 | **Bridge** | `.bridge.json` | Cross-agent session packets |
 
-See the [PIDX repository](https://github.com/<org>/pidx) for the full integration guide.
+See [PIDX repository](https://github.com/dakotav0/pidx) for the full integration guide.
+See [on_agents.md](on_agents.md) for the design statement that ships with this bundle.
 
 ---
 

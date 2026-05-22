@@ -51,7 +51,7 @@ mrag/
 │
 ├── tests/
 │   ├── fixtures/
-│   │   └── mock_packets.json   # Sample BridgePackets for harness (no Minecraft needed)
+│   │   └── mock_packets.json   # Sample BridgePackets for harness (no external dependencies needed)
 │   ├── test_route_accuracy.py  # Does salience+affect combo → correct adapter label?
 │   ├── test_decay.py           # Do low-salience memories drop out over time steps?
 │   └── test_latency.py         # End-to-end < 500ms budget on RTX 4070 Super config
@@ -234,7 +234,7 @@ class AffectRouter:
 
 ## Test Harness
 
-Tests run against **mocked BridgePackets only** — no Minecraft, no llama.cpp, no GPU.
+Tests run against **mocked BridgePackets only** — no external model dependencies, no GPU.
 
 ### `tests/fixtures/mock_packets.json`
 
@@ -296,7 +296,7 @@ Tests run against **mocked BridgePackets only** — no Minecraft, no llama.cpp, 
 ## Implementation Sequence (Pre-Mac)
 
 Since you're waiting on hardware, this order lets you build and validate everything
-without needing GPU or Minecraft:
+without needing GPU or local model access:
 
 1. **`schema/`** — Lock `EngRamPayload` and `BridgePacket` types. These are the
    contract. Everything else builds around them.
@@ -310,7 +310,7 @@ without needing GPU or Minecraft:
 4. **`router/affect_router.py`** — Hardcode the affect bands. Wire to table lookup.
 
 5. **`tests/`** — Feed mock packets through the full pipeline. All three test
-   categories should pass before touching Minecraft or llama.cpp.
+   categories should pass before wiring to a live model or inference backend.
 
 6. **`prefetch/coordinator.py`** — Last, because it depends on mRNA's actual
    layer-timing signals. Mock it in tests; wire the real PCIe prefetch

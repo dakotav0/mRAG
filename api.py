@@ -1,12 +1,12 @@
 """
-mRAG FastAPI server — HTTP surface for Garden-v2, MIIN-kt, and the mRAG MCP.
+mRAG FastAPI server — HTTP surface for agent pipelines and the mRAG MCP.
 
 Endpoints
 ---------
-POST /query           ContextTrigger  → EngRamResponse  (Garden hot path)
+POST /query           ContextTrigger  → EngRamResponse  (main query path)
 POST /query_text      TextQueryRequest → EngRamResponse  (model-agnostic; hash server-side)
-GET  /stats           → MragStats     (Garden control plane panel)
-POST /memory/{adapter_name}           write NPC memory   (MIIN harvest)
+GET  /stats           → MragStats     (runtime stats)
+POST /memory/{adapter_name}           write adapter memory
 DELETE /memory/{adapter_name}/{key}   evict one entry
 POST /memory/{adapter_name}/tick      age all entries N steps
 POST /sync            PidxSyncPacket  → apply decay/boost
@@ -67,10 +67,10 @@ class CrossQueryRequest(BaseModel):
 
 
 class MemoryWriteRequest(BaseModel):
-    """Write a single NPC memory into an adapter table.
+    """Write a single memory into an adapter table.
 
     key is optional — if omitted, derived from text via word-level pseudo-tokenisation
-    so MIIN can write memories without knowing token IDs.
+    so callers can write memories without knowing token IDs.
     """
     text:     str
     salience: float = 0.8
@@ -86,7 +86,7 @@ class TickRequest(BaseModel):
 class StatsResponse(BaseModel):
     tables_loaded:  int
     tables_max:     int
-    hash_hit_rate:  float       # placeholder — tracked by Garden's local cache
+    hash_hit_rate:  float       # placeholder — tracked by the caller's local cache
     evicted:        int
     ngram_n:        int
     seed:           int
@@ -108,7 +108,7 @@ def health():
 
 @app.post("/query")
 def query(trigger: ContextTrigger):
-    """Main Garden hot path. Called before mRNA Layer 25 fires."""
+    """Main query path. Returns memory context for the given adapter trigger."""
     global _hit_count, _query_count, _evicted_total
     _query_count += 1
 
@@ -161,7 +161,7 @@ def query_cross(req: CrossQueryRequest):
 
 @app.get("/stats", response_model=StatsResponse)
 def stats():
-    """Garden control plane panel data."""
+    """Runtime stats for the memory broker."""
     hit_rate = (_hit_count / _query_count) if _query_count else 0.0
     bands = {b.name: [b.low, b.high] for b in AFFECT_BANDS}
     return StatsResponse(
@@ -177,7 +177,7 @@ def stats():
 
 @app.post("/memory/{adapter_name}")
 def write_memory(adapter_name: str, req: MemoryWriteRequest):
-    """MIIN harvest loop — write an NPC interaction memory to an adapter table.
+    """Write an interaction memory to an adapter table.
 
     Auto-tags every write with the adapter name so decay passes can be
     context-aware (e.g., PIDX can boost "drift" tags separately from
@@ -233,7 +233,7 @@ def delete_memory(adapter_name: str, key: str):
 
 @app.post("/memory/{adapter_name}/tick")
 def tick_memory(adapter_name: str, req: TickRequest):
-    """Age all entries in an adapter table by N steps. Called by MIIN session end."""
+    """Age all entries in an adapter table by N steps. Typically called at session end."""
     _bridge._manager.tick_adapter(adapter_name, req.steps)
     evicted = _bridge._manager.evict_stale(adapter_name)
     return {"status": "ok", "steps": req.steps, "evicted": evicted}

@@ -2,7 +2,7 @@
 test_route_accuracy — Does salience + affect combo → correct adapter label?
 
 Pass condition: 100% match on all mock_packets.json fixtures.
-No Minecraft, no llama.cpp, no GPU.
+No external model dependencies, no GPU required.
 """
 
 import json
