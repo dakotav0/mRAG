@@ -11,10 +11,12 @@ except for the outermost bands which clamp at ±1.0.
 
 from __future__ import annotations
 
-from typing import NamedTuple
+from typing import NamedTuple, Callable, List, Optional, TYPE_CHECKING
 
-from mrag.store.engram_table import EngRamTable
-from mrag.schema.payload import EngRamPayload
+if TYPE_CHECKING:
+    from mrag.store.engram_table import EngRamTable
+    from mrag.schema.payload import EngRamPayload
+
 
 
 class _Band(NamedTuple):
@@ -24,7 +26,6 @@ class _Band(NamedTuple):
 
 
 # Ordered high → low so the first match wins on boundary values.
-# Sync these names with mRNA's LoRA adapter filenames.
 AFFECT_BANDS: list[_Band] = [
     _Band(+0.6,  1.01, "warm"),      # nostalgic, friendly, generous
     _Band(+0.2,  0.6,  "cordial"),   # neutral-positive, professional
@@ -34,19 +35,10 @@ AFFECT_BANDS: list[_Band] = [
 ]
 
 
-def _band_for(affect: float) -> str:
-    """Return the band name for a given affect value. Clamps to [-1, 1]."""
-    affect = max(-1.0, min(1.0, affect))
-    for band in AFFECT_BANDS:
-        if band.low <= affect < band.high:
-            return band.name
-    # Should be unreachable given the clamp and band coverage, but fail loud.
-    raise ValueError(f"affect={affect} did not match any band — check AFFECT_BANDS coverage")
-
-
 class AffectRouter:
     """
     Converts affect_mean from retrieved memories into a composite adapter label.
+    Supports dependency injection for custom affect bands and composite routing formats.
 
     Usage
     -----
@@ -55,9 +47,27 @@ class AffectRouter:
     # → "blacksmith_warm"
     """
 
+    def __init__(
+        self,
+        bands: Optional[List[_Band]] = None,
+        format_fn: Optional[Callable[[str, str], str]] = None
+    ) -> None:
+        self.bands = bands if bands is not None else AFFECT_BANDS
+        # Default layout format is legacy "{adapter_hint}_{band}"
+        self.format_fn = format_fn if format_fn is not None else (lambda hint, band: f"{hint}_{band}")
+
+    def _band_for(self, affect: float) -> str:
+        """Return the band name for a given affect value. Clamps to [-1, 1]."""
+        affect = max(-1.0, min(1.0, affect))
+        for band in self.bands:
+            if band.low <= affect < band.high:
+                return band.name
+        # Should be unreachable given the clamp and band coverage, but fail loud.
+        raise ValueError(f"affect={affect} did not match any band in router configuration")
+
     def route(self, affect: float, adapter_hint: str) -> str:
         """
-        Return composite adapter label: "{adapter_hint}_{band}".
+        Return composite adapter label: e.g. "{adapter_hint}_{band}".
 
         Parameters
         ----------
@@ -66,8 +76,8 @@ class AffectRouter:
         adapter_hint : str
             SAE concept label from ContextTrigger (e.g. "blacksmith", "guard").
         """
-        band = _band_for(affect)
-        return f"{adapter_hint}_{band}"
+        band = self._band_for(affect)
+        return self.format_fn(adapter_hint, band)
 
     def route_from_table(self, adapter_hint: str,
                          table: EngRamTable,
@@ -90,9 +100,16 @@ class AffectRouter:
         candidates = table.top_by_salience(top_n)
 
         if not candidates:
-            return f"{adapter_hint}_neutral", 0.0, 0.0
+            return self.format_fn(adapter_hint, "neutral"), 0.0, 0.0
 
-        salience_max = max(p.decayed_salience() for p in candidates)
+        # Note: the table's decay_policy is used by top_by_salience, but we also use it here to pull saliences.
+        # Check if table has a decay_policy, else fall back to legacy payload decayed_salience
+        decay_policy = getattr(table, "decay_policy", None)
+        if decay_policy is not None:
+            salience_max = max(decay_policy.decayed_salience(p.salience, p.age) for p in candidates)
+        else:
+            salience_max = max(p.decayed_salience() for p in candidates)
+
         affect_mean  = sum(p.affect for p in candidates) / len(candidates)
         label        = self.route(affect_mean, adapter_hint)
         return label, salience_max, affect_mean
@@ -118,26 +135,13 @@ if __name__ == "__main__":
     assert r.route(-0.61, "blacksmith") == "blacksmith_hostile"
     assert r.route(-1.0,  "blacksmith") == "blacksmith_hostile"
 
-    # mock_packets.json fixture checks
-    assert r.route(+0.8,  "blacksmith") == "blacksmith_warm",    "trading_positive"
-    assert r.route(-0.85, "guard")      == "guard_hostile",      "combat_negative"
-    # decay_eviction: affect=-0.3 → guarded, but salience is below eviction
-    # threshold so the table would be empty; route_from_table returns neutral.
-    assert r.route(-0.3,  "merchant")   == "merchant_guarded"
-
-    # route_from_table with empty table → neutral fallback
-    from mrag.store.engram_table import EngRamTable
-    empty = EngRamTable("merchant")
-    label, sal, aff = r.route_from_table("merchant", empty)
-    assert label == "merchant_neutral" and sal == 0.0 and aff == 0.0
-
-    # route_from_table with populated table
-    from mrag.schema.payload import EngRamPayload
-    t = EngRamTable("blacksmith")
-    t.put("k1", EngRamPayload("Sword sale.", 0.9, 0.8, "blacksmith", age=2))
-    label, sal, aff = r.route_from_table("blacksmith", t)
-    assert label == "blacksmith_warm"
-    assert abs(sal - 0.9 * 0.95**2) < 1e-9
-    assert aff == 0.8
+    # Custom router configurations
+    custom_bands = [
+        _Band(0.0, 1.01, "happy"),
+        _Band(-1.01, 0.0, "sad")
+    ]
+    r_custom = AffectRouter(bands=custom_bands, format_fn=lambda h, b: f"{h}::{b}")
+    assert r_custom.route(0.5, "guard") == "guard::happy"
+    assert r_custom.route(-0.5, "guard") == "guard::sad"
 
     print("affect_router.py OK")

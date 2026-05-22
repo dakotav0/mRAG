@@ -12,11 +12,14 @@ If you ever need concurrent access, add a threading.Lock around _tables.
 from __future__ import annotations
 
 from collections import OrderedDict
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from mrag.schema.payload import EngRamPayload
 from mrag.store.engram_table import EngRamTable
 from mrag.store.sqlite_backend import SqliteBackend
+
+if TYPE_CHECKING:
+    from mrag.router.decay import DecayPolicy
 
 
 class EngRamManager:
@@ -32,11 +35,19 @@ class EngRamManager:
     max_loaded : int
         Maximum number of adapter tables held in RAM simultaneously.
         Default 3 matches the MIIN archetype count (Warrior, Mystic, etc.).
+    decay_policy : DecayPolicy, optional
+        A custom DecayPolicy to pass down to newly mounted tables.
     """
 
-    def __init__(self, tables_dir: str, max_loaded: int = 3) -> None:
+    def __init__(
+        self,
+        tables_dir: str,
+        max_loaded: int = 3,
+        decay_policy: Optional[DecayPolicy] = None,
+    ) -> None:
         self._backend = SqliteBackend(tables_dir)
         self._max_loaded = max_loaded
+        self._decay_policy = decay_policy
         # OrderedDict: insertion/access order = LRU order (oldest first)
         self._tables: OrderedDict[str, EngRamTable] = OrderedDict()
 
@@ -65,7 +76,7 @@ class EngRamManager:
         if len(self._tables) >= self._max_loaded:
             self._evict_lru()
 
-        table = self._backend.load(adapter_name)
+        table = self._backend.load(adapter_name, decay_policy=self._decay_policy)
         self._tables[adapter_name] = table
         return table
 

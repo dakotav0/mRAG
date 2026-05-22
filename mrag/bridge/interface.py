@@ -22,13 +22,16 @@ call sites.
 
 from __future__ import annotations
 
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 from mrag.schema.bridge import ContextTrigger, EngRamResponse, PidxSyncPacket
 from mrag.store.manager import EngRamManager
 from mrag.router.affect_router import AffectRouter
 from mrag.router.decay import convert_pidx_delta
 from mrag.hash.ngram_hasher import NgramHasher
+
+if TYPE_CHECKING:
+    from mrag.router.decay import DecayPolicy
 
 # Weight of trigram similarity vs salience in miss-path re-ranking.
 # 0.0 = pure salience, 1.0 = pure similarity.
@@ -54,6 +57,10 @@ class BridgeInterface:
     prefetch_hint : callable, optional
         Called with (adapter_name,) after routing to schedule an async
         prefetch. Slot in prefetch/coordinator.py here when ready.
+    decay_policy : DecayPolicy, optional
+        Custom DecayPolicy for tables.
+    affect_router : AffectRouter, optional
+        Custom AffectRouter instance.
     """
 
     def __init__(
@@ -62,9 +69,11 @@ class BridgeInterface:
         max_loaded:     int = 3,
         top_n:          int = 5,
         prefetch_hint:  Optional[Callable[[str], None]] = None,
+        decay_policy:   Optional[DecayPolicy] = None,
+        affect_router:  Optional[AffectRouter] = None,
     ) -> None:
-        self._manager       = EngRamManager(tables_dir, max_loaded)
-        self._router        = AffectRouter()
+        self._manager       = EngRamManager(tables_dir, max_loaded, decay_policy=decay_policy)
+        self._router        = affect_router or AffectRouter()
         self._hasher        = NgramHasher()
         self._top_n         = top_n
         self._prefetch_hint = prefetch_hint

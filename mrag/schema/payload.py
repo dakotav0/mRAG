@@ -1,36 +1,60 @@
 from dataclasses import dataclass, field
+from typing import Generic, TypeVar, Dict, Any, List, Optional
 
 _DECAY_LOOKUP = [0.95 ** i for i in range(1000)]
 
+T = TypeVar("T")
+
 
 @dataclass
-class EngRamPayload:
+class Engram(Generic[T]):
+    """
+    Generic engram memory object for sub-millisecond retrieval.
+    """
+    value: T
+    salience: float = 1.0           # 0.0–1.0
+    affect:   float = 0.0           # -1.0 to +1.0
+    source:   str   = "unknown"
+    age:      int   = 0             # simulated time steps
+    tags:     List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class EngRamPayload(Engram[str]):
     """
     The structured object returned on an Engram hash hit.
-
-    text:     The memory string injected into the prompt context.
-    salience: [0.0, 1.0] — how important this memory is.
-              High salience resists PIDX exponential decay.
-              Threshold for KV cache eviction: salience < 0.15.
-    affect:   [-1.0, 1.0] — emotional valence.
-              Positive → warm/friendly adapter family.
-              Negative → hostile/cautious adapter family.
-              0.0 → neutral/professional adapter.
-    source:   Which adapter table this memory belongs to.
-    age:      Simulated time steps since memory was written.
-              Used by decay engine; not injected into prompt.
-
-    Decay note: PIDX uses continuous days-based λ=0.05/day for NpcMemory.
-    mRAG uses discrete steps with rate=0.05/step. These are parallel clocks —
-    PidxSyncPacket.decay_delta bridges them; do not unify the units here.
+    Keeps 100% backward compatibility for text-based pipelines.
     """
 
-    text:     str
-    salience: float           # 0.0–1.0
-    affect:   float           # -1.0 to +1.0
-    source:   str             # e.g. "blacksmith", "merchant"
-    age:      int   = 0       # simulated time steps
-    tags:     list  = field(default_factory=list)
+    def __init__(
+        self,
+        text: str,
+        salience: float = 1.0,
+        affect: float = 0.0,
+        source: str = "unknown",
+        age: int = 0,
+        tags: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        super().__init__(
+            value=text,
+            salience=salience,
+            affect=affect,
+            source=source,
+            age=age,
+            tags=tags if tags is not None else [],
+            metadata=metadata if metadata is not None else {},
+        )
+
+    @property
+    def text(self) -> str:
+        """The memory string injected into the prompt context."""
+        return self.value
+
+    @text.setter
+    def text(self, val: str) -> None:
+        self.value = val
 
     def decayed_salience(self, decay_rate: float = 0.05) -> float:
         """PIDX-compatible exponential decay over discrete time steps."""
@@ -57,5 +81,10 @@ if __name__ == "__main__":
     assert decay_case.is_evictable(), "decay_eviction fixture should be evictable"
     # 0.3 * 0.95^40 ≈ 0.040 < 0.15
     assert decay_case.decayed_salience() < 0.15
+
+    # Generic check
+    generic_engram = Engram[dict](value={"coord": (10, 20)}, salience=0.8)
+    assert generic_engram.value["coord"] == (10, 20)
+    assert generic_engram.salience == 0.8
 
     print("payload.py OK")

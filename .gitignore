@@ -1,8 +1,11 @@
 .venv/
 __pycache__/
+.DS_Store
 .DS_STORE
 *.py[cod]
 *.egg-info/
 dist/
-data/memory_tables/*.db
-data/tables/*.db
+.pytest_cache/
+.ruff_cache/
+data/
+*.db

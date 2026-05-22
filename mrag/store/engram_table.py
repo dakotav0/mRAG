@@ -1,5 +1,5 @@
 """
-EngRamTable — per-adapter in-memory hash table.
+EngRamTable — per-adapter in-memory engram store.
 
 Maps ngram_hash (hex str) → EngRamPayload. No SQLite knowledge here;
 the backend handles persistence. Keep this a pure data structure so it
@@ -12,6 +12,7 @@ import heapq
 from typing import Iterator, Optional
 
 from mrag.schema.payload import EngRamPayload
+from mrag.router.decay import DecayPolicy, ExponentialDecay
 
 
 class EngRamTable:
@@ -19,16 +20,18 @@ class EngRamTable:
     In-memory engram store for one adapter.
 
     Keys are hex digests produced by NgramHasher.lookup_key().
-    Values are EngRamPayload instances.
+    Values are EngRamPayload instances (or generic Engram instances).
 
     Designed to be serialized/deserialized by sqlite_backend and
     mounted/unmounted by EngRamManager. No I/O here.
     """
 
-    def __init__(self, adapter_name: str) -> None:
+    def __init__(self, adapter_name: str, decay_policy: Optional[DecayPolicy] = None) -> None:
         self.adapter_name = adapter_name
         self._store: dict[str, EngRamPayload] = {}
         self._needs_eviction = True
+        # Expose customizable decay policy, fallback to default 0.05 ExponentialDecay
+        self.decay_policy = decay_policy if decay_policy is not None else ExponentialDecay(0.05)
 
     # ── Core access ──────────────────────────────────────────────────────────
 
@@ -63,28 +66,32 @@ class EngRamTable:
 
     def evict_stale(self, threshold: float = 0.15) -> int:
         """
-        Remove entries whose decayed salience is below threshold.
+        Remove entries whose decayed salience is below threshold using the decay policy.
         Returns count of evicted entries.
         """
         if not self._needs_eviction:
             return 0
-        to_drop = [k for k, v in self._store.items() if v.is_evictable(threshold)]
+        to_drop = [
+            k for k, v in self._store.items()
+            if self.decay_policy.is_evictable(v.salience, v.age, threshold)
+        ]
         for k in to_drop:
             del self._store[k]
         self._needs_eviction = False
         return len(to_drop)
 
     def top_by_salience(self, n: int = 5) -> list[EngRamPayload]:
-        """Return up to n payloads sorted by decayed_salience descending."""
+        """Return up to n payloads sorted by decayed_salience descending using the decay policy."""
         return heapq.nlargest(
             n,
             self._store.values(),
-            key=lambda p: p.decayed_salience(),
+            key=lambda p: self.decay_policy.decayed_salience(p.salience, p.age),
         )
 
 
 if __name__ == "__main__":
     from mrag.schema.payload import EngRamPayload
+    from mrag.router.decay import LinearDecay
 
     t = EngRamTable("blacksmith")
 
@@ -102,7 +109,6 @@ if __name__ == "__main__":
     # Tick 20 steps:
     #   p1: 0.9 * 0.95^20 ≈ 0.322 — survives
     #   p2: 0.3 * 0.95^20 ≈ 0.107 — evictable
-    # (40 ticks would drop p1 below threshold too: 0.9 * 0.95^40 ≈ 0.116 < 0.15)
     t.tick(20)
     assert p2.age == 20
     evicted = t.evict_stale()
@@ -113,5 +119,15 @@ if __name__ == "__main__":
     # top_by_salience returns remaining entry
     top = t.top_by_salience()
     assert top[0] is p1
+
+    # Linear decay table test
+    t_linear = EngRamTable("merchant", decay_policy=LinearDecay(0.01))
+    p3 = EngRamPayload("linear memory", salience=0.5, age=0)
+    t_linear.put("linear_key", p3)
+    t_linear.tick(40)  # age -> 40
+    # decayed_salience = max(0, 0.5 - 40 * 0.01) = 0.1
+    # is_evictable(0.15 threshold) -> True
+    assert t_linear.evict_stale() == 1
+    assert len(t_linear) == 0
 
     print("engram_table.py OK")

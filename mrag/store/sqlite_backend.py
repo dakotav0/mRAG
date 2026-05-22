@@ -12,12 +12,15 @@ via EngRamTable. SQLite is only hit on mount (load) and unmount (save).
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 from pathlib import Path
 
 from mrag.schema.payload import EngRamPayload
 from mrag.store.engram_table import EngRamTable
+from typing import TYPE_CHECKING, Optional
+if TYPE_CHECKING:
+    from mrag.router.decay import DecayPolicy
+
 
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS engrams (
@@ -92,12 +95,12 @@ class SqliteBackend:
 
     # ── Public API ───────────────────────────────────────────────────────────
 
-    def load(self, adapter_name: str) -> EngRamTable:
+    def load(self, adapter_name: str, decay_policy: Optional[DecayPolicy] = None) -> EngRamTable:
         """
         Read all rows from the adapter's SQLite db into a fresh EngRamTable.
         Returns an empty table if the db doesn't exist yet.
         """
-        table = EngRamTable(adapter_name)
+        table = EngRamTable(adapter_name, decay_policy=decay_policy)
         conn = self._connect(adapter_name)
         self._ensure_schema(conn)
 
