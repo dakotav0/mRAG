@@ -1,9 +1,10 @@
 """
-mRAG FastAPI server — HTTP surface for Garden-v2 and MIIN-kt.
+mRAG FastAPI server — HTTP surface for Garden-v2, MIIN-kt, and the mRAG MCP.
 
 Endpoints
 ---------
 POST /query           ContextTrigger  → EngRamResponse  (Garden hot path)
+POST /query_text      TextQueryRequest → EngRamResponse  (model-agnostic; hash server-side)
 GET  /stats           → MragStats     (Garden control plane panel)
 POST /memory/{adapter_name}           write NPC memory   (MIIN harvest)
 DELETE /memory/{adapter_name}/{key}   evict one entry
@@ -50,6 +51,20 @@ _hasher = NgramHasher()
 app = FastAPI(title="mRAG", version="0.1.0")
 
 # ── Request/Response models ───────────────────────────────────────────────────
+
+class TextQueryRequest(BaseModel):
+    """Query by raw text — hash is computed server-side via _text_to_key."""
+    text:           str
+    adapter_hint:   str = "unknown"
+    prompt_preview: Optional[str] = None
+
+
+class CrossQueryRequest(BaseModel):
+    """Query across multiple adapters — merges results by salience."""
+    text:          str
+    adapter_hints: list[str]
+    prompt_preview: Optional[str] = None
+
 
 class MemoryWriteRequest(BaseModel):
     """Write a single NPC memory into an adapter table.
@@ -106,6 +121,44 @@ def query(trigger: ContextTrigger):
     return response
 
 
+@app.post("/query_text")
+def query_text(req: TextQueryRequest):
+    """Model-agnostic query: callers pass raw text, hash is computed here."""
+    global _hit_count, _query_count, _evicted_total
+    _query_count += 1
+
+    key = _text_to_key(req.text)
+    response = _bridge.handle_trigger(ContextTrigger(
+        adapter_hint=req.adapter_hint,
+        context_hash=key,
+        prompt_preview=(req.prompt_preview or req.text)[:128],
+    ), query_text=req.text)
+    _evicted_total += response.evicted_count
+    if response.salience_max > 0.0:
+        _hit_count += 1
+    return response
+
+
+@app.post("/query_cross")
+def query_cross(req: CrossQueryRequest):
+    """Cross-table query: searches multiple adapters, merges by salience + similarity."""
+    global _hit_count, _query_count, _evicted_total
+    _query_count += 1
+
+    key = _text_to_key(req.text)
+    response = _bridge.handle_cross_trigger(
+        adapter_hints=req.adapter_hints,
+        context_hash=key,
+        query_text=req.text,
+    )
+    _evicted_total += response.evicted_count
+
+    if response.salience_max > 0.0:
+        _hit_count += 1
+
+    return response
+
+
 @app.get("/stats", response_model=StatsResponse)
 def stats():
     """Garden control plane panel data."""
@@ -124,18 +177,48 @@ def stats():
 
 @app.post("/memory/{adapter_name}")
 def write_memory(adapter_name: str, req: MemoryWriteRequest):
-    """MIIN harvest loop — write an NPC interaction memory to an adapter table."""
+    """MIIN harvest loop — write an NPC interaction memory to an adapter table.
+
+    Auto-tags every write with the adapter name so decay passes can be
+    context-aware (e.g., PIDX can boost "drift" tags separately from
+    "session" tags). Caller-provided tags are merged in.
+    """
     key = req.key or _text_to_key(req.text)
+    tags = list(req.tags) if req.tags else []
+    # Auto-tag with adapter for context-aware decay
+    tag_adapter = f"adapter:{adapter_name}"
+    if tag_adapter not in tags:
+        tags.append(tag_adapter)
     payload = EngRamPayload(
         text=req.text,
         salience=req.salience,
         affect=req.affect,
         source=adapter_name,
         age=0,
-        tags=req.tags,
+        tags=tags,
     )
     _bridge._manager.write_memory(adapter_name, key, payload)
-    return {"status": "ok", "adapter": adapter_name, "key": key}
+    return {"status": "ok", "adapter": adapter_name, "key": key, "tags": tags}
+
+
+@app.get("/memory/{adapter_name}/{key}")
+def get_memory(adapter_name: str, key: str):
+    """Direct key lookup — returns the full payload or 404."""
+    table = _bridge._manager.mount(adapter_name)
+    payload = table.get(key)
+    if payload is None:
+        raise HTTPException(status_code=404, detail=f"key {key} not found in adapter {adapter_name}")
+    return {
+        "adapter": adapter_name,
+        "key": key,
+        "text": payload.text,
+        "salience": payload.salience,
+        "affect": payload.affect,
+        "source": payload.source,
+        "age": payload.age,
+        "tags": payload.tags,
+        "decayed_salience": payload.decayed_salience(),
+    }
 
 
 @app.delete("/memory/{adapter_name}/{key}")
@@ -172,9 +255,12 @@ atexit.register(_bridge.shutdown)
 
 def _text_to_key(text: str) -> str:
     """
-    Derive a lookup key from raw text when token IDs are unavailable.
-    Maps each whitespace-token to its ordinal sum as a pseudo-token ID.
-    Consistent for the same text string; good enough for MIIN writes.
+    Derive a lookup key from raw text via character trigrams → N-gram hasher.
+
+    Uses NgramHasher.tokenize_text() to produce pseudo-token IDs, then
+    lookup_key() to find the dominant N-gram hash. Character trigrams are
+    vocabulary-independent and deterministic — same text always maps to the
+    same key regardless of tokenizer or platform.
     """
-    pseudo_ids = [sum(ord(c) for c in word) for word in text.lower().split() if word]
+    pseudo_ids = _hasher.tokenize_text(text)
     return _hasher.lookup_key(pseudo_ids) if pseudo_ids else "empty"

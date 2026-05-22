@@ -93,24 +93,67 @@ class NgramHasher:
         """
         Returns the single canonical lookup key for this token context.
 
-        Strategy: hex digest of the highest-frequency N-gram (tie → first seen).
-        For short Minecraft prompts the action phrase dominates; for long
-        turn-based prompts the thematic anchor repeats most often.
+        Always uses the full token-ID sequence — the dominant-ngram strategy
+        is appropriate for BPE token vocabularies (~32k discrete types) where
+        a repeated trigram signals a genuine theme, but character trigrams
+        produce catastrophic collisions ("the", "ing", "and" dominate every
+        English text). Full-sequence hashing gives stable, unique keys.
 
-        Falls back to a hash of the full token sequence if the input is
-        shorter than N (avoids a dead lookup on very short prefills).
+        The ngram hash list (hash_context) is preserved for future similarity
+        matching.
+
+        Sub-N input: hashes the full token sequence directly.
         """
-        hashes = self.hash_context(token_ids)
-        if not hashes:
-            # Sub-N input: hash the entire sequence as a single unit
-            packed = self._ngram_bytes(tuple(token_ids)) if token_ids else b""
-            return _hash_bytes(packed, self.seed)
+        packed = self._ngram_bytes(tuple(token_ids)) if token_ids else b""
+        return _hash_bytes(packed, self.seed)
 
-        counts = Counter(hashes)
-        # most_common(1) returns the highest count; ties broken by first insertion
-        # Counter preserves insertion order on ties in CPython 3.7+
-        dominant, _ = counts.most_common(1)[0]
-        return dominant
+    def tokenize_text(self, text: str) -> list[int]:
+        """
+        Convert raw text to pseudo-token IDs using character trigrams.
+
+        Each character trigram (sliding window of 3 chars) maps to a
+        deterministic u32 via byte-packing. Works on any text without
+        requiring a BPE tokenizer — the hash space is vocabulary-independent.
+
+        Text shorter than 3 chars returns a single-token list using the
+        full string packed as one pseudo-token.
+
+        This is the bridge between free-text input and the N-gram hasher's
+        token-ID-based pipeline. Equivalent to _text_to_key's old role but
+        produces a proper token-ID sequence instead of word-ordinal-sums.
+        """
+        chars = text.lower()
+        if len(chars) < 3:
+            # Sub-trigram text: pack the full string as one pseudo-token
+            packed = chars.encode('utf-8', errors='replace')
+            val = 0
+            for i, b in enumerate(packed[:4]):
+                val |= b << (8 * i)
+            return [val]
+
+        ids = []
+        for i in range(len(chars) - 2):
+            trigram = chars[i:i + 3]
+            # Pack 3 chars as a u24 (big-endian style): ord0<<16 | ord1<<8 | ord2
+            val = (ord(trigram[0]) << 16) | (ord(trigram[1]) << 8) | ord(trigram[2])
+            ids.append(val)
+        return ids
+
+    def text_similarity(self, query: str, candidate: str) -> float:
+        """
+        Character-trigram Jaccard similarity between two texts.
+
+        Returns 0.0–1.0. Fast, vocabulary-independent, zero dependencies.
+        Used as a lightweight embedding fallback for re-ranking when the
+        hash path misses.
+        """
+        q_ids = set(self.tokenize_text(query))
+        c_ids = set(self.tokenize_text(candidate))
+        if not q_ids or not c_ids:
+            return 0.0
+        intersection = q_ids & c_ids
+        union = q_ids | c_ids
+        return len(intersection) / len(union)
 
 
 if __name__ == "__main__":

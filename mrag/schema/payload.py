@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
-from typing import Optional
+
+_DECAY_LOOKUP = [0.95 ** i for i in range(1000)]
 
 
 @dataclass
@@ -33,6 +34,10 @@ class EngRamPayload:
 
     def decayed_salience(self, decay_rate: float = 0.05) -> float:
         """PIDX-compatible exponential decay over discrete time steps."""
+        if decay_rate == 0.05:
+            if self.age < 1000:
+                return self.salience * _DECAY_LOOKUP[self.age]
+            return 0.0
         return self.salience * (1.0 - decay_rate) ** self.age
 
     def is_evictable(self, threshold: float = 0.15) -> bool:

@@ -28,6 +28,7 @@ EVICTION_THRESHOLD: float = 0.15   # below this, memory is KV-cache evictable
 
 # ── PIDX NpcMemory λ (days⁻¹) — used only for delta conversion ───────────────
 _PIDX_NPC_MEMORY_LAMBDA: float = 0.05
+_DECAY_LOOKUP = [0.95 ** i for i in range(1000)]
 
 
 def decayed_salience(salience: float, age: int,
@@ -38,6 +39,10 @@ def decayed_salience(salience: float, age: int,
     Mirrors EngRamPayload.decayed_salience() as a standalone function
     so the router and bridge can call it without an EngRamPayload instance.
     """
+    if rate == 0.05:
+        if age < 1000:
+            return salience * _DECAY_LOOKUP[age]
+        return 0.0
     return salience * (1.0 - rate) ** age
 
 

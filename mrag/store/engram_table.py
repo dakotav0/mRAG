@@ -8,6 +8,7 @@ can be re-implemented as a PyO3 extension later without changing call sites.
 
 from __future__ import annotations
 
+import heapq
 from typing import Iterator, Optional
 
 from mrag.schema.payload import EngRamPayload
@@ -27,6 +28,7 @@ class EngRamTable:
     def __init__(self, adapter_name: str) -> None:
         self.adapter_name = adapter_name
         self._store: dict[str, EngRamPayload] = {}
+        self._needs_eviction = True
 
     # ── Core access ──────────────────────────────────────────────────────────
 
@@ -37,6 +39,7 @@ class EngRamTable:
     def put(self, key: str, payload: EngRamPayload) -> None:
         """Upsert a payload. Overwrites existing entry for the same key."""
         self._store[key] = payload
+        self._needs_eviction = True
 
     def __contains__(self, key: str) -> bool:
         return key in self._store
@@ -53,27 +56,31 @@ class EngRamTable:
 
     def tick(self, steps: int = 1) -> None:
         """Age all entries by `steps` simulated time steps."""
-        for payload in self._store.values():
-            payload.age += steps
+        if steps > 0:
+            for payload in self._store.values():
+                payload.age += steps
+            self._needs_eviction = True
 
     def evict_stale(self, threshold: float = 0.15) -> int:
         """
         Remove entries whose decayed salience is below threshold.
         Returns count of evicted entries.
         """
+        if not self._needs_eviction:
+            return 0
         to_drop = [k for k, v in self._store.items() if v.is_evictable(threshold)]
         for k in to_drop:
             del self._store[k]
+        self._needs_eviction = False
         return len(to_drop)
 
     def top_by_salience(self, n: int = 5) -> list[EngRamPayload]:
         """Return up to n payloads sorted by decayed_salience descending."""
-        ranked = sorted(
+        return heapq.nlargest(
+            n,
             self._store.values(),
             key=lambda p: p.decayed_salience(),
-            reverse=True,
         )
-        return ranked[:n]
 
 
 if __name__ == "__main__":
