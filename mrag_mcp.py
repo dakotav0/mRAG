@@ -81,6 +81,13 @@ def _post(path: str, body: dict) -> dict:
         return r.json()
 
 
+def _delete(path: str) -> dict:
+    with httpx.Client(base_url=MRAG_URL, timeout=TIMEOUT) as client:
+        r = client.delete(path)
+        r.raise_for_status()
+        return r.json()
+
+
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -251,6 +258,152 @@ def memory_stats() -> str:
         f"evicted: {data['evicted']}  "
         f"ngram_n: {data['ngram_n']}"
     )
+
+
+@mcp.tool()
+def list_adapters() -> str:
+    """
+    List all adapter names in the mRAG store, with load status and entry counts.
+    Returns on-disk adapters even when they are not currently loaded in RAM.
+    """
+    if not USE_HTTP and _local_bridge is not None:
+        try:
+            backend = _local_bridge._manager._backend
+            on_disk = backend.list_adapters()
+            loaded = set(_local_bridge._manager.loaded_adapters)
+            all_names = sorted(set(on_disk) | loaded)
+            lines = [f"[mRAG (Local)] {len(all_names)} adapters:"]
+            for name in all_names:
+                status = "loaded" if name in loaded else "on-disk"
+                count = backend.count(name)
+                lines.append(f"  {name} ({status}, {count} entries)")
+            return "\n".join(lines)
+        except Exception as exc:
+            pass
+
+    # HTTP Fallback
+    try:
+        data = _get("/adapters")
+    except httpx.HTTPError as exc:
+        return f"mRAG unavailable ({MRAG_URL}): {exc}"
+
+    lines = [f"[mRAG] {data['total']} adapters:"]
+    for a in data["adapters"]:
+        status = "loaded" if a["loaded"] else "on-disk"
+        lines.append(f"  {a['name']} ({status}, {a['entry_count']} entries)")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def delete_memory(
+    adapter_name: str,
+    key: str,
+) -> str:
+    """
+    Delete a single memory entry by adapter and key.
+    No-op if the key does not exist.
+    """
+    if not USE_HTTP and _local_bridge is not None:
+        try:
+            table = _local_bridge._manager.mount(adapter_name)
+            if key in table:
+                del table._store[key]
+                return f"Deleted from '{adapter_name}' (key={key})"
+            return f"Not found in '{adapter_name}' (key={key})"
+        except Exception as exc:
+            pass
+
+    # HTTP Fallback
+    try:
+        data = _delete(f"/memory/{adapter_name}/{key}")
+    except httpx.HTTPError as exc:
+        return f"Delete failed: {exc}"
+
+    return f"{data['status']}: {data.get('key', key)}"
+
+
+@mcp.tool()
+def get_memory(
+    adapter_name: str,
+    key: str,
+) -> str:
+    """
+    Direct keyed lookup of a single memory entry.
+    Returns full payload (text, salience, affect, tags, age) or 404.
+    """
+    if not USE_HTTP and _local_bridge is not None:
+        try:
+            table = _local_bridge._manager.mount(adapter_name)
+            payload = table.get(key)
+            if payload is None:
+                return f"Not found: '{adapter_name}' key={key}"
+            return (
+                f"[{adapter_name}] key={key}\n"
+                f"  text: {payload.text[:200]}{'...' if len(payload.text) > 200 else ''}\n"
+                f"  salience: {payload.salience:.2f}  affect: {payload.affect:+.2f}\n"
+                f"  age: {payload.age}  tags: {payload.tags}"
+            )
+        except Exception as exc:
+            pass
+
+    # HTTP Fallback
+    try:
+        data = _get(f"/memory/{adapter_name}/{key}")
+    except httpx.HTTPError as exc:
+        return f"mRAG unavailable ({MRAG_URL}): {exc}"
+
+    return (
+        f"[{data['adapter']}] key={data['key']}\n"
+        f"  text: {data['text'][:200]}{'...' if len(data['text']) > 200 else ''}\n"
+        f"  salience: {data['salience']:.2f}  affect: {data['affect']:+.2f}\n"
+        f"  age: {data['age']}  tags: {data['tags']}"
+    )
+
+
+@mcp.tool()
+def update_memory(
+    adapter_name: str,
+    key: str,
+    salience: float | None = None,
+    affect: float | None = None,
+    tags: list[str] | None = None,
+    text: str | None = None,
+) -> str:
+    """
+    Update an existing memory entry's salience, affect, tags, or text.
+    Returns not_found if the key does not exist. Only provided fields are changed.
+    Primary use: thread lifecycle → mRAG salience propagation.
+    """
+    if not USE_HTTP and _local_bridge is not None:
+        try:
+            table = _local_bridge._manager.mount(adapter_name)
+            payload = table.get(key)
+            if payload is None:
+                return f"Not found: '{adapter_name}' key={key}"
+            if salience is not None:
+                payload.salience = max(0.0, min(1.0, salience))
+            if affect is not None:
+                payload.affect = max(-1.0, min(1.0, affect))
+            if tags is not None:
+                payload.tags = list(tags)
+            if text is not None:
+                payload.text = text
+            return f"Updated '{adapter_name}' key={key} (salience={payload.salience:.2f}, affect={payload.affect:+.2f})"
+        except Exception as exc:
+            pass
+
+    # HTTP Fallback
+    try:
+        data = _post(f"/memory/{adapter_name}/{key}/update", {
+            "salience": salience,
+            "affect": affect,
+            "tags": tags,
+            "text": text,
+        })
+    except httpx.HTTPError as exc:
+        return f"Update failed: {exc}"
+
+    return f"Updated '{data['adapter']}' key={data['key']}"
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

@@ -83,6 +83,14 @@ class TickRequest(BaseModel):
     steps: int = 1
 
 
+class UpdateMemoryRequest(BaseModel):
+    """Partial update — all fields optional, only provided fields change."""
+    salience: Optional[float] = None
+    affect:   Optional[float] = None
+    tags:     Optional[list[str]] = None
+    text:     Optional[str] = None
+
+
 class StatsResponse(BaseModel):
     tables_loaded:  int
     tables_max:     int
@@ -100,6 +108,26 @@ _query_count = 0
 _evicted_total = 0
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
+
+@app.get("/adapters")
+def list_adapters():
+    """List all adapter names (on-disk + loaded) with metadata."""
+    on_disk = _bridge._manager._backend.list_adapters()
+    loaded = set(_bridge._manager.loaded_adapters)
+    result = []
+    for name in sorted(set(on_disk) | loaded):
+        info = {
+            "name": name,
+            "loaded": name in loaded,
+            "on_disk": name in on_disk,
+        }
+        try:
+            info["entry_count"] = _bridge._manager._backend.count(name)
+        except Exception:
+            info["entry_count"] = 0
+        result.append(info)
+    return {"adapters": result, "total": len(result)}
+
 
 @app.get("/health")
 def health():
@@ -229,6 +257,31 @@ def delete_memory(adapter_name: str, key: str):
         del table._store[key]
         return {"status": "evicted", "key": key}
     return {"status": "not_found", "key": key}
+
+
+@app.post("/memory/{adapter_name}/{key}/update")
+def update_memory(adapter_name: str, key: str, req: UpdateMemoryRequest):
+    """Partial update — only provided fields change. Thread lifecycle → salience hook."""
+    table = _bridge._manager.mount(adapter_name)
+    payload = table.get(key)
+    if payload is None:
+        raise HTTPException(status_code=404, detail=f"key {key} not found in adapter {adapter_name}")
+    if req.salience is not None:
+        payload.salience = max(0.0, min(1.0, req.salience))
+    if req.affect is not None:
+        payload.affect = max(-1.0, min(1.0, req.affect))
+    if req.tags is not None:
+        payload.tags = list(req.tags)
+    if req.text is not None:
+        payload.text = req.text
+    return {
+        "status": "updated",
+        "adapter": adapter_name,
+        "key": key,
+        "salience": payload.salience,
+        "affect": payload.affect,
+        "tags": payload.tags,
+    }
 
 
 @app.post("/memory/{adapter_name}/tick")

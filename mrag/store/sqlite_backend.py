@@ -137,6 +137,25 @@ class SqliteBackend:
         if not self._in_memory:
             conn.close()
 
+    def count(self, adapter_name: str) -> int:
+        """Return the number of engram rows in an adapter's database."""
+        conn = self._connect(adapter_name)
+        self._ensure_schema(conn)
+        row = conn.execute("SELECT COUNT(*) FROM engrams").fetchone()
+        count = row[0] if row else 0
+        if not self._in_memory:
+            conn.close()
+        return count
+
+    def list_adapters(self) -> list[str]:
+        """Return all adapter names that have .db files on disk."""
+        if self._in_memory:
+            return list(self._mem_conns.keys())
+        names = []
+        for path in sorted(self.tables_dir.glob("*.db")):
+            names.append(path.stem)
+        return names
+
     def delete(self, adapter_name: str) -> None:
         """Drop the adapter's database file (used when an NPC is fully retired)."""
         if self._in_memory:
