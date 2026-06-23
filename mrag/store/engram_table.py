@@ -55,6 +55,10 @@ class EngRamTable:
     def items(self) -> Iterator[tuple[str, EngRamPayload]]:
         return iter(self._store.items())
 
+    def query_by_tag(self, tag: str) -> list[tuple[str, EngRamPayload]]:
+        """Return all (key, payload) pairs whose payload.tags contains <tag>."""
+        return [(k, v) for k, v in self._store.items() if tag in v.tags]
+
     # ── Decay / eviction ─────────────────────────────────────────────────────
 
     def tick(self, steps: int = 1) -> None:

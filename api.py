@@ -24,6 +24,7 @@ Env vars:
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -34,6 +35,7 @@ from mrag.bridge.interface import BridgeInterface
 from mrag.schema.bridge import ContextTrigger, PidxSyncPacket
 from mrag.schema.payload import EngRamPayload
 from mrag.router.affect_router import AFFECT_BANDS
+from mrag.router.decay import EVICTION_THRESHOLD
 from mrag.hash.ngram_hasher import NgramHasher
 
 # ── Config ───────────────────────────────────────────────────────────────────
@@ -47,6 +49,83 @@ Path(TABLES_DIR).mkdir(parents=True, exist_ok=True)
 # One bridge per process — shared EngRamManager LRU pool
 _bridge = BridgeInterface(tables_dir=TABLES_DIR, max_loaded=MAX_LOADED, top_n=TOP_N)
 _hasher = NgramHasher()
+
+# ── Auto-tick (time-based decay) ─────────────────────────────────────────────
+
+# 1 step ≈ N seconds of wall-clock time. At 86400s (24h) per step and λ=0.05,
+# a memory at 0.8 salience survives ~33 days before hitting the 0.15 threshold.
+# Adjust TICK_INTERVAL to make decay faster (lower) or slower (higher).
+TICK_INTERVAL_SECONDS: float = 86_400.0  # seconds per decay step (24h)
+
+_last_tick_mono: float = time.monotonic()  # monotonic clock, survives system sleep
+
+
+def _auto_tick() -> None:
+    """Apply time-based decay to all mounted adapters since last call.
+
+    Calculates elapsed wall time, converts to whole decay steps, and ticks
+    every adapter currently in RAM.  This keeps salience drifting in real
+    time without requiring an external cron job.
+
+    Each adapter uses its own eviction threshold (identity adapters decay
+    slower than session adapters).
+
+    Called at the top of every query endpoint.  Decay naturally slows as
+    entries cross the eviction threshold — nothing forces them out; they
+    just stop appearing in results because their decayed salience is below
+    the threshold.
+    """
+    global _last_tick_mono
+    now = time.monotonic()
+    elapsed = now - _last_tick_mono
+    if elapsed < TICK_INTERVAL_SECONDS:
+        return  # not enough time has passed
+
+    steps = int(elapsed / TICK_INTERVAL_SECONDS)
+    if steps < 1:
+        return
+
+    # Tick every adapter currently in RAM
+    adapters = list(_bridge._manager.loaded_adapters)
+    for name in adapters:
+        try:
+            _bridge._manager.tick_adapter(name, steps)
+        except Exception:
+            pass  # skip adapters that fail to mount
+
+    # Eviction: prune stale entries using per-adapter thresholds
+    for name in adapters:
+        try:
+            threshold = _get_eviction_threshold(name)
+            _bridge._manager.evict_stale(name, threshold)
+        except Exception:
+            pass
+
+    _last_tick_mono = now
+
+
+# ── Per-adapter eviction threshold overrides ────────────────────────────
+# Adapters not listed use EVICTION_THRESHOLD (0.15).  Identity-bearing
+# adapters use a lower threshold so core observations persist longer.
+PER_ADAPTER_THRESHOLD: dict[str, float] = {
+    "ada":       0.05,   # identity — very slow decay
+    "dakota":    0.05,   # identity — very slow decay
+    "naomi":     0.05,   # identity — very slow decay
+    "Elia":      0.05,   # identity — very slow decay
+    "elia":      0.05,   # identity — very slow decay
+    "nested-learning": 0.08,  # knowledge — slow decay
+    "research":        0.08,  # knowledge — slow decay
+}
+
+
+def _get_eviction_threshold(adapter_name: str) -> float:
+    """Return the eviction threshold for the given adapter.
+
+    Falls back to the global EVICTION_THRESHOLD if no per-adapter override
+    is configured.
+    """
+    return PER_ADAPTER_THRESHOLD.get(adapter_name, EVICTION_THRESHOLD)
+
 
 app = FastAPI(title="mRAG", version="0.1.0")
 
@@ -71,16 +150,23 @@ class MemoryWriteRequest(BaseModel):
 
     key is optional — if omitted, derived from text via word-level pseudo-tokenisation
     so callers can write memories without knowing token IDs.
+
+    age is optional — set to 0 (fresh memory) by default.  When writing data
+    that describes past events, set age to an estimate of how many steps old
+    the information already is.  This creates natural salience spread:
+    older information starts lower, fresh info starts higher.
     """
     text:     str
     salience: float = 0.8
     affect:   float = 0.0
+    age:      int = 0     # initial age in steps — stagger this for spread
     tags:     list[str] = []
     key:      Optional[str] = None
 
 
 class TickRequest(BaseModel):
     steps: int = 1
+    threshold: Optional[float] = None  # override eviction threshold per tick
 
 
 class UpdateMemoryRequest(BaseModel):
@@ -89,6 +175,11 @@ class UpdateMemoryRequest(BaseModel):
     affect:   Optional[float] = None
     tags:     Optional[list[str]] = None
     text:     Optional[str] = None
+
+
+class BulkTagSalienceRequest(BaseModel):
+    """Bulk salience update for all entries with a given tag."""
+    salience: float
 
 
 class StatsResponse(BaseModel):
@@ -140,6 +231,8 @@ def query(trigger: ContextTrigger):
     global _hit_count, _query_count, _evicted_total
     _query_count += 1
 
+    _auto_tick()  # time-based decay before every query
+
     response = _bridge.handle_trigger(trigger)
     _evicted_total += response.evicted_count
 
@@ -154,6 +247,8 @@ def query_text(req: TextQueryRequest):
     """Model-agnostic query: callers pass raw text, hash is computed here."""
     global _hit_count, _query_count, _evicted_total
     _query_count += 1
+
+    _auto_tick()  # time-based decay before every query
 
     key = _text_to_key(req.text)
     response = _bridge.handle_trigger(ContextTrigger(
@@ -172,6 +267,8 @@ def query_cross(req: CrossQueryRequest):
     """Cross-table query: searches multiple adapters, merges by salience + similarity."""
     global _hit_count, _query_count, _evicted_total
     _query_count += 1
+
+    _auto_tick()  # time-based decay before every query
 
     key = _text_to_key(req.text)
     response = _bridge.handle_cross_trigger(
@@ -222,7 +319,7 @@ def write_memory(adapter_name: str, req: MemoryWriteRequest):
         salience=req.salience,
         affect=req.affect,
         source=adapter_name,
-        age=0,
+        age=req.age,
         tags=tags,
     )
     _bridge._manager.write_memory(adapter_name, key, payload)
@@ -286,10 +383,32 @@ def update_memory(adapter_name: str, key: str, req: UpdateMemoryRequest):
 
 @app.post("/memory/{adapter_name}/tick")
 def tick_memory(adapter_name: str, req: TickRequest):
-    """Age all entries in an adapter table by N steps. Typically called at session end."""
+    """Age all entries in an adapter table by N steps. Typically called at session end.
+
+    Uses the per-adapter eviction threshold by default.  Pass `threshold` in
+    the request body to override for this tick.
+    """
     _bridge._manager.tick_adapter(adapter_name, req.steps)
-    evicted = _bridge._manager.evict_stale(adapter_name)
+    threshold = req.threshold if req.threshold is not None else _get_eviction_threshold(adapter_name)
+    evicted = _bridge._manager.evict_stale(adapter_name, threshold)
     return {"status": "ok", "steps": req.steps, "evicted": evicted}
+
+
+@app.post("/memory/{adapter_name}/tag/{tag}")
+def update_by_tag(adapter_name: str, tag: str, req: BulkTagSalienceRequest):
+    """Bulk salience update for all entries tagged with <tag>.
+    
+    Thread lifecycle hook: when a thread transitions to latent or closed,
+    all mRAG memories tagged with that thread slug get their salience
+    adjusted. No-op if no entries match the tag.
+    """
+    table = _bridge._manager.mount(adapter_name)
+    entries = table.query_by_tag(tag)
+    updated = 0
+    for key, payload in entries:
+        payload.salience = max(0.0, min(1.0, req.salience))
+        updated += 1
+    return {"status": "ok", "adapter": adapter_name, "tag": tag, "updated": updated}
 
 
 @app.post("/sync")

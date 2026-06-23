@@ -6,9 +6,20 @@ Backend:   mRAG FastAPI at MRAG_URL (default http://localhost:7438) OR direct SQ
 
 Tools
 -----
-query_memory   Read relevant memories for a text snippet
-write_memory   Store a new memory in an adapter table
-memory_stats   Live stats from the running mRAG service
+query_memory     Read relevant memories for a text snippet
+write_memory     Store a new memory in an adapter table
+write_observation  [Legend] Store a typed Observation (Layer 0)
+query_observations [Legend] Query and deserialize Observations
+memory_stats     Live stats from the running mRAG service
+
+Lingua Franca / Layer 0 Legend Types
+-------------------------------------
+This server now imports the legend module from the lingua-franca blueprint:
+  ~/agents/blueprints/lingua-franca/legend.py
+
+When available, it registers Observation-typed tools on top of the existing
+raw-memory interface. The Observation type is the shared currency between
+mRAG, PIDX, the bridge, and agent profiles (Layer 0 of the ensemble).
 
 Run via Claude Desktop — see claude_desktop_config.json.
 Requires the mRAG FastAPI server to be running independently:
@@ -17,11 +28,26 @@ Requires the mRAG FastAPI server to be running independently:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
+from datetime import datetime
 import httpx
 from pathlib import Path
 from fastmcp import FastMCP
+
+# ── Lingua Franca (Layer 0 Legend Types) ─────────────────────────────────────
+legend_path = Path(__file__).parent.parent.parent / "agents" / "blueprints" / "lingua-franca"
+if str(legend_path) not in sys.path:
+    sys.path.insert(0, str(legend_path))
+
+_legend_loaded = False
+try:
+    from legend import Observation, WeightShift, ThreadStatus, ConfidenceDecay
+    _legend_loaded = True
+    print(f"[mRAG MCP] Lingua Franca legend v{getattr(Observation, '__module__', '0.1.0')} loaded.")
+except ImportError as e:
+    print(f"[mRAG MCP] Legend not available ({e}). Observation-typed tools disabled.")
 
 MRAG_URL = os.getenv("MRAG_URL", "http://localhost:7438")
 TIMEOUT  = 5.0
@@ -177,6 +203,7 @@ def write_memory(
     text:         str,
     salience:     float      = 0.8,
     affect:       float      = 0.0,
+    age:          int        = 0,
     tags:         list[str]  = [],
 ) -> str:
     """
@@ -186,6 +213,8 @@ def write_memory(
     text:         the memory string to store.
     salience:     importance [0.0–1.0]; high salience resists decay.
     affect:       emotional valence [-1.0–1.0]; 0 is neutral.
+    age:          initial age in decay steps.  Set >0 for information that
+                  describes past events — creates natural salience spread.
     tags:         optional category strings for salience boosting (e.g. ["craft", "trade"]).
     """
     if not USE_HTTP and _local_bridge is not None and EngRamPayload is not None:
@@ -203,7 +232,7 @@ def write_memory(
                 salience=salience,
                 affect=affect,
                 source=adapter_name,
-                age=0,
+                age=age,
                 tags=merged_tags,
             )
             _local_bridge._manager.write_memory(adapter_name, key, payload)
@@ -218,6 +247,7 @@ def write_memory(
             "text":     text,
             "salience": salience,
             "affect":   affect,
+            "age":      age,
             "tags":     tags,
         })
     except httpx.HTTPError as exc:
@@ -404,6 +434,221 @@ def update_memory(
         return f"Update failed: {exc}"
 
     return f"Updated '{data['adapter']}' key={data['key']}"
+
+
+# ── Lingua Franca Legend-Typed Tools ──────────────────────────────────────────
+
+if _legend_loaded:
+
+    @mcp.tool()
+    def write_observation(
+        source: str,
+        field: str,
+        value: str,
+        confidence: float = 0.5,
+        salience: float = 0.8,
+        thread_id: str | None = None,
+        raw: str | None = None,
+    ) -> str:
+        """
+        Store a legend-typed Observation in the mRAG store.
+
+        The Observation is the Layer 0 currency of the ensemble — a structured
+        record of a behavioral, cognitive, or preference observation. Every
+        subsystem (PIDX, bridge, agent profiles) speaks this type.
+
+        source:      origin identifier ("mrag" | "pidx" | "model" | "user")
+        field:       dot-path category ("identity.core", "working.pattern")
+        value:       the observation value (JSON-encoded string)
+        confidence:  0.0–1.0 how certain the observation is
+        salience:    0.0–1.0 importance; high salience resists decay
+        thread_id:   optional thread this observation belongs to
+        raw:         optional verbatim source text
+        """
+        obs = Observation(
+            source=source,
+            field=field,
+            value=value,
+            confidence=confidence,
+            salience=salience,
+            timestamp=datetime.utcnow().isoformat(),
+            thread_id=thread_id,
+            raw=raw,
+        )
+        serialized = json.dumps(obs.to_dict())
+        tags = [f"type:observation", f"field:{field}", f"source:{source}"]
+        if thread_id:
+            tags.append(f"thread:{thread_id}")
+
+        return str(_store_legend_entry(source, serialized, salience, tags))
+
+    @mcp.tool()
+    def query_observations(
+        text: str,
+        adapter_hint: str = "unknown",
+        adapter_hints: list[str] = [],
+        min_confidence: float = 0.0,
+    ) -> str:
+        """
+        Query mRAG and return results deserialized as Observation objects.
+
+        Filters for entries tagged as legend Observations and applies an
+        optional confidence floor. Returns a formatted list with typed
+        metadata (field, source, confidence, salience, thread_id).
+
+        text:          query text for semantic retrieval
+        adapter_hint:  single persona name (e.g. "ada", "dakota")
+        adapter_hints: cross-table query (supersedes adapter_hint)
+        min_confidence: minimum confidence threshold [0.0–1.0]
+        """
+        raw_result = _query_memory_internal(text, adapter_hint, adapter_hints)
+        return _format_observation_results(raw_result, min_confidence)
+
+
+def _store_legend_entry(adapter_name: str, serialized: str, salience: float, tags: list[str]) -> str:
+    """Internal helper — stores an Observation JSON blob into mRAG.
+
+    Returns the storage confirmation string from the underlying write_memory path.
+    Works in Local Direct Mode or HTTP fallback.
+    """
+    # Local Direct Mode
+    if not USE_HTTP and _local_bridge is not None and _hasher is not None and EngRamPayload is not None:
+        try:
+            pseudo_ids = _hasher.tokenize_text(serialized) if _hasher else []
+            key = _hasher.lookup_key(pseudo_ids) if (_hasher and pseudo_ids) else "empty"
+
+            merged_tags = list(tags) if tags else []
+            tag_adapter = f"adapter:{adapter_name}"
+            if tag_adapter not in merged_tags:
+                merged_tags.append(tag_adapter)
+
+            payload = EngRamPayload(
+                text=serialized,
+                salience=salience,
+                affect=0.0,
+                source=adapter_name,
+                age=0,
+                tags=merged_tags,
+            )
+            _local_bridge._manager.write_memory(adapter_name, key, payload)
+            return f"Observation stored in '{adapter_name}' (key={key}) [Local Direct Mode]"
+        except Exception:
+            pass
+
+    # HTTP Fallback
+    try:
+        data = _post(f"/memory/{adapter_name}", {
+            "text": serialized,
+            "salience": salience,
+            "affect": 0.0,
+            "tags": tags,
+        })
+    except httpx.HTTPError as exc:
+        return f"Observation write failed: {exc}"
+
+    return f"Observation stored in '{data.get('adapter', adapter_name)}' (key={data.get('key', '?')})"
+
+
+def _query_memory_internal(text: str, adapter_hint: str, adapter_hints: list[str]) -> list[dict]:
+    """Internal helper — query mRAG and return raw token dicts.
+
+    Returns a list of dicts with 'text', 'salience_max', 'affect_mean' keys,
+    or an empty list on failure.
+    """
+    if not USE_HTTP and _local_bridge is not None and ContextTrigger is not None:
+        try:
+            pseudo_ids = _hasher.tokenize_text(text) if _hasher else []
+            key = _hasher.lookup_key(pseudo_ids) if (_hasher and pseudo_ids) else "empty"
+
+            if adapter_hints:
+                response = _local_bridge.handle_cross_trigger(
+                    adapter_hints=adapter_hints,
+                    context_hash=key,
+                    query_text=text,
+                )
+            else:
+                response = _local_bridge.handle_trigger(
+                    ContextTrigger(
+                        adapter_hint=adapter_hint,
+                        context_hash=key,
+                        prompt_preview=text[:128],
+                    ),
+                    query_text=text,
+                )
+            tokens = response.memory_tokens
+            if not tokens:
+                return []
+            return [
+                {"text": t, "salience_max": response.salience_max, "affect_mean": response.affect_mean}
+                for t in tokens
+            ]
+        except Exception:
+            pass
+
+    try:
+        if adapter_hints:
+            data = _post("/query_cross", {
+                "text": text,
+                "adapter_hints": adapter_hints,
+            })
+        else:
+            data = _post("/query_text", {
+                "text": text,
+                "adapter_hint": adapter_hint,
+            })
+    except httpx.HTTPError:
+        return []
+
+    tokens = data.get("memory_tokens", [])
+    if not tokens:
+        return []
+    salience = data.get("salience_max", 0.0)
+    affect = data.get("affect_mean", 0.0)
+    return [{"text": t, "salience_max": salience, "affect_mean": affect} for t in tokens]
+
+
+def _format_observation_results(tokens: list[dict], min_confidence: float) -> str:
+    """Internal helper — parse raw tokens as Observations and format for display."""
+    if not tokens:
+        return "No observations found."
+
+    lines = [f"[mRAG] Observation results (min_confidence={min_confidence:.2f}):"]
+    obs_count = 0
+
+    for i, entry in enumerate(tokens, 1):
+        text = entry.get("text", "")
+        salience = entry.get("salience_max", 0.0)
+        affect = entry.get("affect_mean", 0.0)
+
+        # Try to parse as serialized Observation
+        try:
+            data = json.loads(text)
+            obs = Observation.from_dict(data)
+            if obs.confidence < min_confidence:
+                continue
+            obs_count += 1
+            lines.append(
+                f"  {obs_count}. [{obs.field}] (src={obs.source}, "
+                f"conf={obs.confidence:.2f}, sal={obs.salience:.2f})"
+            )
+            lines.append(f"     value: {str(obs.value)[:120]}")
+            if obs.thread_id:
+                lines.append(f"     thread: {obs.thread_id}")
+            if obs.raw:
+                lines.append(f"     raw: {obs.raw[:100]}")
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            # Not an Observation — show as raw memory with confidence placeholder
+            conf = max(0.0, min(1.0, salience))  # estimate
+            if conf < min_confidence:
+                continue
+            obs_count += 1
+            lines.append(f"  {obs_count}. [raw] (salience={salience:.2f}, affect={affect:+.2f})")
+            lines.append(f"     {text[:200]}")
+
+    if obs_count == 0:
+        return "No observations meet the confidence threshold."
+
+    return "\n".join(lines)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
